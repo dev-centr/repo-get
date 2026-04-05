@@ -3,5 +3,9 @@
 	"description": "Multi-VCS repository fetching library for D.",
 	"authors": ["amdphreak"],
 	"license": "BSL-1.0",
-	"targetType": "library"
+	"targetType": "library",
+	"dependencies": {
+		"sdlang-d": "~>0.10.6"
+	},
+	"stringImportPaths": ["."]
 }

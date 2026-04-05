@@ -1,0 +1,12 @@
+{
+	"fileVersion": 1,
+	"versions": {
+		"assertions": {"path":"../devcentr/unit-threaded/subpackages/assertions"},
+		"exception": {"path":"../devcentr/unit-threaded/subpackages/exception"},
+		"from": {"path":"../devcentr/unit-threaded/subpackages/from"},
+		"runner": {"path":"../devcentr/unit-threaded/subpackages/runner"},
+		"sdlang-d": "0.10.6",
+		"taggedalgebraic": "0.11.24",
+		"unit-threaded": "0.7.55"
+	}
+}

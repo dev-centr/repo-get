@@ -6,20 +6,80 @@ import std.string;
 import std.file;
 import std.path;
 import std.algorithm;
+import std.regex;
+import std.net.curl;
+import sdlang;
 
 /**
- * Supported Version Control Systems
+ * Metadata for a VCS Profile defined in SDL
  */
-enum VCS {
-    Git,
-    SVN,
-    Hg,
-    Jj,
-    Darcs,
-    Fossil,
-    Bazaar,
-    CVS,
-    P4
+struct VCSProfile {
+    string name;
+    string[] matchers;
+    string[] checkCmd;
+    string[] cloneCmd;
+    string[] pullCmd;
+    string[] statusCmd;
+    string[] openCmd;
+}
+
+/**
+ * Generic VCS Provider that executes commands based on dynamic profiles
+ */
+class GenericVCSProvider : VCSProvider {
+    private VCSProfile profile;
+
+    this(VCSProfile profile) {
+        this.profile = profile;
+    }
+
+    void clone(string url, string path) {
+        if (profile.cloneCmd.length == 0) throw new Exception("Clone command not defined for " ~ profile.name);
+        
+        auto cmd = interpolate(profile.cloneCmd, url, path);
+        auto pid = spawnProcess(cmd);
+        if (wait(pid) != 0) throw new Exception(profile.name ~ " clone failed: " ~ cmd.join(" "));
+
+        if (profile.openCmd.length > 0) {
+            auto ocmd = interpolate(profile.openCmd, url, path);
+            auto opid = spawnProcess(ocmd, stdin, stdout, stderr, null, Config.none, path);
+            if (wait(opid) != 0) throw new Exception(profile.name ~ " open failed");
+        }
+    }
+
+    void pull(string path) {
+        if (profile.pullCmd.length == 0) throw new Exception("Pull command not defined for " ~ profile.name);
+        
+        auto cmd = interpolate(profile.pullCmd, "", path);
+        auto pid = spawnProcess(cmd, stdin, stdout, stderr, null, Config.none, path);
+        if (wait(pid) != 0) throw new Exception(profile.name ~ " pull failed");
+    }
+
+    string status(string path) {
+        if (profile.statusCmd.length == 0) return "Status not supported for " ~ profile.name;
+        
+        auto cmd = interpolate(profile.statusCmd, "", path);
+        auto res = execute(cmd, null, Config.none, size_t.max, path);
+        return res.output;
+    }
+
+    bool isAvailable() {
+        if (profile.checkCmd.length == 0) return true;
+        try {
+            return execute(profile.checkCmd).status == 0;
+        } catch (Exception) {
+            return false;
+        }
+    }
+
+    private string[] interpolate(string[] args, string url, string path) {
+        string[] result;
+        foreach (arg; args) {
+            auto a = arg.replace("$URL", url).replace("$PATH", path);
+            result ~= a;
+        }
+        return result;
+    }
 }
 
 /**
@@ -33,232 +93,94 @@ interface VCSProvider {
 }
 
 /**
- * Git Provider wrapping the 'git' CLI
+ * Manager to handle loading and updating VCS profiles
  */
-class GitProvider : VCSProvider {
-    void clone(string url, string path) {
-        auto pid = spawnProcess(["git", "clone", "--depth", "1", url, path]);
-        if (wait(pid) != 0) throw new Exception("Git clone failed");
+class ProfileManager {
+    private VCSProfile[string] profiles;
+    private static const string DEFAULT_SDL = import("vcs-profiles.sdl");
+    private string cachePath;
+
+    this() {
+        cachePath = buildPath(environment.get("USERPROFILE"), ".dev-centr", "repo-get", "vcs-profiles.sdl");
+        loadAll();
     }
 
-    void pull(string path) {
-        auto pid = spawnProcess(["git", "-C", path, "pull"]);
-        if (wait(pid) != 0) throw new Exception("Git pull failed");
+    void loadAll() {
+        // 1. Load built-in
+        parseSdl(DEFAULT_SDL);
+
+        // 2. Load from cache (overlay)
+        if (exists(cachePath)) {
+            try { parseSdl(readText(cachePath)); } catch (Exception e) { 
+                writeln("Warning: Failed to parse cached profiles: ", e.msg);
+            }
+        }
     }
 
-    string status(string path) {
-        auto res = execute(["git", "-C", path, "status", "--short"]);
-        return res.output;
+    void updateFromRemote() {
+        string url = "https://raw.githubusercontent.com/dev-centr/repo-get/main/vcs-profiles.sdl";
+        try {
+            auto content = cast(string)get(url);
+            if (content.canFind("vcs")) {
+                string d = dirName(cachePath);
+                if (!exists(d)) mkdirRecurse(d);
+                std.file.write(cachePath, content);
+                parseSdl(content);
+                writeln("Updated VCS profiles from GitHub.");
+            }
+        } catch (Exception e) {
+            writeln("Warning: Could not update profiles from GitHub: ", e.msg);
+        }
     }
 
-    bool isAvailable() {
-        try { return execute(["git", "--version"]).status == 0; } catch (Exception) { return false; }
+    private void parseSdl(string content) {
+        Tag root = parseSource(content);
+        foreach (tag; root.tags) {
+            if (tag.name == "vcs") {
+                VCSProfile p;
+                p.name = tag.values[0].get!string;
+                
+                foreach (t; tag.tags) {
+                    string[] vals;
+                    foreach (v; t.values) vals ~= v.get!string;
+
+                    if (t.name == "matcher") p.matchers = vals;
+                    else if (t.name == "check") p.checkCmd = vals;
+                    else if (t.name == "clone") p.cloneCmd = vals;
+                    else if (t.name == "pull") p.pullCmd = vals;
+                    else if (t.name == "status") p.statusCmd = vals;
+                    else if (t.name == "open") p.openCmd = vals;
+                }
+                profiles[p.name] = p;
+            }
+        }
+    }
+
+    VCSProvider findProvider(string url) {
+        foreach (profile; profiles.values) {
+            foreach (m; profile.matchers) {
+                if (matchFirst(url, regex(m))) return new GenericVCSProvider(profile);
+            }
+        }
+        // Default to git if no match
+        if ("git" in profiles) return new GenericVCSProvider(profiles["git"]);
+        return null;
     }
 }
 
-/**
- * Subversion Provider wrapping the 'svn' CLI
- */
-class SvnProvider : VCSProvider {
-    void clone(string url, string path) {
-        auto pid = spawnProcess(["svn", "checkout", url, path]);
-        if (wait(pid) != 0) throw new Exception("SVN checkout failed");
-    }
-
-    void pull(string path) {
-        auto pid = spawnProcess(["svn", "update", path]);
-        if (wait(pid) != 0) throw new Exception("SVN update failed");
-    }
-
-    string status(string path) {
-        auto res = execute(["svn", "status", path]);
-        return res.output;
-    }
-
-    bool isAvailable() {
-        try { return execute(["svn", "--version"]).status == 0; } catch (Exception) { return false; }
-    }
-}
+private ProfileManager _manager;
 
 /**
- * Mercurial Provider wrapping the 'hg' CLI
+ * Singleton-ish access to the manager
  */
-class HgProvider : VCSProvider {
-    void clone(string url, string path) {
-        auto pid = spawnProcess(["hg", "clone", url, path]);
-        if (wait(pid) != 0) throw new Exception("Hg clone failed");
-    }
-
-    void pull(string path) {
-        auto pid = spawnProcess(["hg", "pull", "-u", "-R", path]);
-        if (wait(pid) != 0) throw new Exception("Hg pull failed");
-    }
-
-    string status(string path) {
-        auto res = execute(["hg", "status", "-R", path]);
-        return res.output;
-    }
-
-    bool isAvailable() {
-        try { return execute(["hg", "--version"]).status == 0; } catch (Exception) { return false; }
-    }
-}
-
-/**
- * Jujutsu Provider wrapping the 'jj' CLI
- */
-class JjProvider : VCSProvider {
-    void clone(string url, string path) {
-        auto pid = spawnProcess(["jj", "git", "clone", url, path]);
-        if (wait(pid) != 0) throw new Exception("Jj clone failed");
-    }
-
-    void pull(string path) {
-        auto pid = spawnProcess(["jj", "git", "fetch", "--repository", path]);
-        if (wait(pid) != 0) throw new Exception("Jj fetch failed");
-    }
-
-    string status(string path) {
-        auto res = execute(["jj", "status", "--repository", path]);
-        return res.output;
-    }
-
-    bool isAvailable() {
-        try { return execute(["jj", "--version"]).status == 0; } catch (Exception) { return false; }
-    }
-}
-
-/**
- * Darcs Provider wrapping the 'darcs' CLI
- */
-class DarcsProvider : VCSProvider {
-    void clone(string url, string path) {
-        auto pid = spawnProcess(["darcs", "get", url, path]);
-        if (wait(pid) != 0) throw new Exception("Darcs get failed");
-    }
-
-    void pull(string path) {
-        auto pid = spawnProcess(["darcs", "pull", "--repodir", path]);
-        if (wait(pid) != 0) throw new Exception("Darcs pull failed");
-    }
-
-    string status(string path) {
-        auto res = execute(["darcs", "whatsnew", "--repodir", path]);
-        return res.output;
-    }
-
-    bool isAvailable() {
-        try { return execute(["darcs", "--version"]).status == 0; } catch (Exception) { return false; }
-    }
-}
-
-/**
- * Fossil Provider wrapping the 'fossil' CLI
- */
-class FossilProvider : VCSProvider {
-    void clone(string url, string path) {
-        auto pid = spawnProcess(["fossil", "clone", url, path ~ ".fossil"]);
-        if (wait(pid) != 0) throw new Exception("Fossil clone failed");
-        auto openPid = spawnProcess(["fossil", "open", path ~ ".fossil"], stdin, stdout, stderr, null, Config.none, path);
-        if (wait(openPid) != 0) throw new Exception("Fossil open failed");
-    }
-
-    void pull(string path) {
-        auto pid = spawnProcess(["fossil", "update"], stdin, stdout, stderr, null, Config.none, path);
-        if (wait(pid) != 0) throw new Exception("Fossil update failed");
-    }
-
-    string status(string path) {
-        auto res = execute(["fossil", "status"], null, Config.none, size_t.max, path);
-        return res.output;
-    }
-
-    bool isAvailable() {
-        try { return execute(["fossil", "version"]).status == 0; } catch (Exception) { return false; }
-    }
-}
-
-/**
- * Bazaar Provider wrapping the 'bzr' CLI
- */
-class BazaarProvider : VCSProvider {
-    void clone(string url, string path) {
-        auto pid = spawnProcess(["bzr", "branch", url, path]);
-        if (wait(pid) != 0) throw new Exception("Bazaar branch failed");
-    }
-
-    void pull(string path) {
-        auto pid = spawnProcess(["bzr", "pull", "--directory", path]);
-        if (wait(pid) != 0) throw new Exception("Bazaar pull failed");
-    }
-
-    string status(string path) {
-        auto res = execute(["bzr", "status", "--directory", path]);
-        return res.output;
-    }
-
-    bool isAvailable() {
-        try { return execute(["bzr", "--version"]).status == 0; } catch (Exception) { return false; }
-    }
-}
-
-/**
- * CVS Provider wrapping the 'cvs' CLI
- */
-class CvsProvider : VCSProvider {
-    void clone(string url, string path) {
-        // url should be in format :pserver:user@host:/path
-        auto pid = spawnProcess(["cvs", "-d", url, "checkout", "-d", path, "."]);
-        if (wait(pid) != 0) throw new Exception("CVS checkout failed");
-    }
-
-    void pull(string path) {
-        auto pid = spawnProcess(["cvs", "update"], stdin, stdout, stderr, null, Config.none, path);
-        if (wait(pid) != 0) throw new Exception("CVS update failed");
-    }
-
-    string status(string path) {
-        auto res = execute(["cvs", "status"], null, Config.none, size_t.max, path);
-        return res.output;
-    }
-
-    bool isAvailable() {
-        try { return execute(["cvs", "--version"]).status == 0; } catch (Exception) { return false; }
-    }
-}
-
-/**
- * Perforce Provider wrapping the 'p4' CLI
- */
-class P4Provider : VCSProvider {
-    void clone(string url, string path) {
-        // url should be the depot path
-        auto pid = spawnProcess(["p4", "sync", url ~ "/..."]);
-        if (wait(pid) != 0) throw new Exception("P4 sync failed");
-    }
-
-    void pull(string path) {
-        auto pid = spawnProcess(["p4", "sync"], stdin, stdout, stderr, null, Config.none, path);
-        if (wait(pid) != 0) throw new Exception("P4 sync failed");
-    }
-
-    string status(string path) {
-        auto res = execute(["p4", "status"], null, Config.none, size_t.max, path);
-        return res.output;
-    }
-
-    bool isAvailable() {
-        try { return execute(["p4", "-V"]).status == 0; } catch (Exception) { return false; }
-    }
+ProfileManager getManager() {
+    if (_manager is null) _manager = new ProfileManager();
+    return _manager;
 }
 
 /**
  * Factory for creating the correct provider based on URL or metadata
  */
 VCSProvider getProvider(string url) {
-    if (url.endsWith(".git") || url.startsWith("git+")) return new GitProvider();
-    if (url.startsWith("svn://") || url.canFind("/svn/")) return new SvnProvider();
-    if (url.startsWith("hg+")) return new HgProvider();
-    // Default to Git if unknown
-    return new GitProvider();
+    return getManager().findProvider(url);
 }
