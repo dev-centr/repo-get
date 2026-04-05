@@ -1,0 +1,7 @@
+{
+	"name": "repo-get",
+	"description": "Multi-VCS repository fetching library for D.",
+	"authors": ["amdphreak"],
+	"license": "BSL-1.0",
+	"targetType": "library"
+}

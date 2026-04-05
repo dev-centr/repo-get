@@ -1,0 +1,11 @@
+# Dub
+.dub/
+docs/
+docs.json
+__standard_library_docs/
+*.lib
+*.obj
+*.exe
+*.pdb
+*.exp
+repo-get.lib
