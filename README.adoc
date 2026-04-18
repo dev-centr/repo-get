@@ -1,0 +1,44 @@
+= repo-get
+
+Multi-VCS repository fetching library for https://dlang.org[D].
+
+https://github.com/dev-centr/repo-get[Repository] · https://github.com/dev-centr/repo-get/releases[Releases]
+
+== Overview
+
+`repo-get` picks a version-control backend from URL patterns and runs clone, pull, and status using declarative https://sdlang.org/[SDL] profiles.
+Default definitions live in `vcs-profiles.sdl`; an optional user cache under `.dev-centr/repo-get/` can overlay or refresh profiles from this repo’s `main` branch.
+
+== Features
+
+* SDL-defined VCS profiles (git, Subversion, Mercurial, Jujutsu, Darcs, Fossil, Bazaar, CVS, Perforce-style URLs in the bundled set)
+* `VCSProvider` interface: clone, pull, status, availability checks
+* Bootstrap HTTP downloads resolved through https://github.com/AMDphreak/libequivalence[libequivalence] rules in `bootstrap.sdl`
+* Platform facts (`devcentr.platform`) for matcher rules on Windows, Linux, and macOS
+
+== Requirements
+
+* A https://dlang.org/download.html[D compiler] and https://github.com/dlang/dub[DUB]
+
+== Use as a dependency
+
+Add the package to your `dub.json` or `dub.sdl` (path, Git URL, or registry name once published), then import `devcentr.repoget` and `devcentr.platform`.
+
+Primary entry points:
+
+* `getProvider(string url)` — resolve a `VCSProvider` from a URL
+* `getManager()` / `ProfileManager` — load profiles, optional remote refresh
+* `BootstrapDownloader.download` — fetch a file using curl, wget, or PowerShell per bootstrap rules
+
+== Configuration
+
+Bundled profiles are compiled in via `stringImportPaths`.
+To refresh from GitHub, call `ProfileManager.updateFromRemote()` (writes under `%USERPROFILE%\.dev-centr\repo-get\` on Windows).
+
+== License
+
+https://opensource.org/licenses/BSL-1.0[Boost Software License 1.0] (BSL-1.0)
+
+== Changelog
+
+Summary notes ship with https://github.com/dev-centr/repo-get/releases[GitHub Releases].

@@ -7,8 +7,13 @@ import std.file;
 import std.path;
 import std.algorithm;
 import std.regex;
-import std.net.curl;
+import std.container;
 import sdlang;
+
+// Equivalence Engine Core
+import equivalence.engine;
+import equivalence.path;
+import devcentr.platform;
 
 /**
  * Metadata for a VCS Profile defined in SDL
@@ -21,6 +26,7 @@ struct VCSProfile {
     string[] pullCmd;
     string[] statusCmd;
     string[] openCmd;
+    string[] installCmd; // [NEW] Installation command mapping
 }
 
 /**
@@ -34,6 +40,11 @@ class GenericVCSProvider : VCSProvider {
     }
 
     void clone(string url, string path) {
+        if (!isAvailable()) {
+            writeln("Warning: ", profile.name, " is not available. Attempting to install...");
+            install();
+        }
+
         if (profile.cloneCmd.length == 0) throw new Exception("Clone command not defined for " ~ profile.name);
         
         auto cmd = interpolate(profile.cloneCmd, url, path);
@@ -72,6 +83,37 @@ class GenericVCSProvider : VCSProvider {
         }
     }
 
+    /**
+     * Attempt to install the provider using platform-specific rules
+     */
+    void install() {
+        // Use libequivalence to resolve 'install-vcs' intent
+        auto engine = new RuleEngine();
+        engine.parseRules(import("bootstrap.sdl"));
+        
+        auto facts = getPlatformFacts();
+        // Resolve intent: install-<vcs-name>
+        string intent = "install-" ~ profile.name.toLower();
+        
+        // Match rules based on facts
+        // Simple implementation: iterate rules and check matchers
+        foreach(rule; engine.rules) {
+             // In a full implementation, we'd use intent resolution.
+             // For bootstrap, we'll look for replace rules that match the intent name.
+             if (rule.type == "replace" && rule.target.startsWith(intent)) {
+                 // Check if it's executable
+                 auto cmdParts = rule.replacement.split(" ");
+                 writeln("Executing installation: ", rule.replacement);
+                 auto pid = spawnProcess(cmdParts);
+                 if (wait(pid) == 0) {
+                     writeln("Successfully installed ", profile.name);
+                     return;
+                 }
+             }
+        }
+        throw new Exception("Could not find a valid installation path for " ~ profile.name ~ " on this platform.");
+    }
+
     private string[] interpolate(string[] args, string url, string path) {
         string[] result;
         foreach (arg; args) {
@@ -90,6 +132,35 @@ interface VCSProvider {
     void pull(string path);
     string status(string path);
     bool isAvailable();
+}
+
+/**
+ * Shell-based downloader using Equivalence bootstrap rules
+ */
+class BootstrapDownloader {
+    static void download(string url, string path) {
+        auto engine = new RuleEngine();
+        engine.parseRules(import("bootstrap.sdl"));
+        
+        // Find a downloader that works
+        foreach (rule; engine.rules) {
+            if (rule.type == "replace" && rule.target.startsWith("download-url")) {
+                auto cmdStr = rule.replacement.replace("$URL", url).replace("$PATH", path);
+                auto cmdParts = cmdStr.split(" ");
+                
+                // Check if the tool itself exists (e.g., 'curl' or 'wget')
+                try {
+                    auto check = execute([cmdParts[0], "--version"]);
+                    if (check.status == 0) {
+                        writeln("Downloading using: ", cmdParts[0]);
+                        auto pid = spawnProcess(cmdParts);
+                        if (wait(pid) == 0) return;
+                    }
+                } catch (Exception) {}
+            }
+        }
+        throw new Exception("No suitable downloader found (curl/wget/powershell). Please install one.");
+    }
 }
 
 /**
@@ -120,11 +191,14 @@ class ProfileManager {
     void updateFromRemote() {
         string url = "https://raw.githubusercontent.com/dev-centr/repo-get/main/vcs-profiles.sdl";
         try {
-            auto content = cast(string)get(url);
+            string tmpPath = cachePath ~ ".tmp";
+            BootstrapDownloader.download(url, tmpPath);
+            
+            auto content = readText(tmpPath);
             if (content.canFind("vcs")) {
                 string d = dirName(cachePath);
                 if (!exists(d)) mkdirRecurse(d);
-                std.file.write(cachePath, content);
+                std.file.rename(tmpPath, cachePath);
                 parseSdl(content);
                 writeln("Updated VCS profiles from GitHub.");
             }
@@ -150,6 +224,7 @@ class ProfileManager {
                     else if (t.name == "pull") p.pullCmd = vals;
                     else if (t.name == "status") p.statusCmd = vals;
                     else if (t.name == "open") p.openCmd = vals;
+                    else if (t.name == "install") p.installCmd = vals;
                 }
                 profiles[p.name] = p;
             }

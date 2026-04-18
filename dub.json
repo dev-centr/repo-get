@@ -5,7 +5,11 @@
 	"license": "BSL-1.0",
 	"targetType": "library",
 	"dependencies": {
-		"sdlang-d": "~>0.10.6"
+		"sdlang-d": "~>0.10.6",
+		"libequivalence": {
+			"repository": "git+https://github.com/AMDphreak/libequivalence.git",
+			"version": "ecbc77baa6863517b15b2fcd467aa24b2429386a"
+		}
 	},
 	"stringImportPaths": ["."]
 }
